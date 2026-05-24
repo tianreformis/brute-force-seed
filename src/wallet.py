@@ -206,15 +206,14 @@ def derive_btc_like(seed, coin_type, account=0, address_index=0):
 def derive_eth(seed, account=0, address_index=0):
     _, _, pub = _derive_path(seed, f"m/44'/60'/{account}'/0/{address_index}")
     ser = _point_ser(pub, False)
-    from Crypto.Hash import keccak_256
-    k = keccak_256.new()
+    from Crypto.Hash import keccak
+    k = keccak.new(digest_bits=256)
     k.update(ser[1:])
     return {"address": "0x" + k.digest()[-20:].hex()}
 
 
 def derive_sol(mnemonic, account=0):
     import nacl.bindings
-    from nacl import encoding
 
     seed_bytes = mnemonic_to_seed(mnemonic)
     k, c, _ = _seed_to_master(seed_bytes)
@@ -230,9 +229,15 @@ def derive_sol(mnemonic, account=0):
     seed_32 = _int_to(k, 32)
     seed_32 = hashlib.sha512(seed_32).digest()[:32]
 
-    sk = nacl.bindings.crypto_sign_seed_keypair(seed_32)
-    pk = sk[1]
-    return {"address": encoding.Base58Encoder.encode(pk).decode()}
+    _, pk = nacl.bindings.crypto_sign_seed_keypair(seed_32)
+    actual_pk = pk[:32]
+    b58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    n = _int_from(actual_pk)
+    res = []
+    while n > 0:
+        n, r = divmod(n, 58)
+        res.append(b58[r])
+    return {"address": "".join(reversed(res))}
 
 
 COIN_CONFIGS = {

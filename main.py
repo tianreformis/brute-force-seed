@@ -6,12 +6,16 @@ import signal
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.mnemonic import generate_mnemonic, mnemonic_to_seed, validate_mnemonic, load_wordlist
+from src.mnemonic import generate_mnemonic, mnemonic_to_seed, validate_mnemonic, load_wordlist, entropy_to_mnemonic
 from src.wallet import derive_all, COIN_CONFIGS
 from src.balance_checker import check_btc, check_eth, check_ltc, check_sol
-from src.logger import log_found, log_checked
+from src.logger import log_found, log_checked, _has_positive_balance
+from src.state import init_state, save_state, reset_state, next_entropy, load_state
 
 running = True
+state_master_seed = None
+state_counter = 0
+state_total_checked = 0
 
 BALANCE_CHECKERS = {
     "btc": check_btc,
@@ -23,7 +27,7 @@ BALANCE_CHECKERS = {
 
 def signal_handler(sig, frame):
     global running
-    print("\n[!] Interrupted. Stopping...")
+    print("\n[!] Interrupted. Saving state...")
     running = False
 
 
@@ -35,7 +39,6 @@ def print_banner():
 
 
 def process_mnemonic(mnemonic, checkers, verbose=False):
-    seed = mnemonic_to_seed(mnemonic)
     wallets = derive_all(mnemonic)
     balances = {}
 
@@ -66,50 +69,75 @@ def process_mnemonic(mnemonic, checkers, verbose=False):
     return wallets, balances
 
 
+def save_current_state():
+    global state_master_seed, state_counter, state_total_checked
+    save_state(state_master_seed, state_counter, state_total_checked)
+
+
 def generate_loop(bits, delay, checkers, verbose, save_found):
-    global running
-    checked = 0
+    global running, state_master_seed, state_counter, state_total_checked
+
+    state_master_seed, state_counter, state_total_checked = init_state()
+    wordlist = load_wordlist()
+
+    state_save_interval = max(100, 1000 // (bits // 128))
+    last_state_save = state_counter
+    found_count = 0
+
+    print(f"[*] Resuming from counter {state_counter} ({state_total_checked} total checked)")
+    print(f"[*] Press Ctrl+C to stop\n")
+
     while running:
         try:
-            mnemonic, _ = generate_mnemonic(bits)
-            checked += 1
+            entropy = next_entropy(state_master_seed, state_counter, bits)
+            mnemonic = entropy_to_mnemonic(entropy, wordlist)
+            state_counter += 1
+            state_total_checked += 1
+
             wallets, balances = process_mnemonic(mnemonic, checkers, verbose)
 
-            has_funds = False
-            for coin, bal in balances.items():
-                b = bal.get("balance", 0)
-                if isinstance(b, (int, float)) and b > 0:
-                    has_funds = True
-                elif isinstance(b, str):
-                    try:
-                        if float(b) > 0:
-                            has_funds = True
-                    except ValueError:
-                        pass
+            has_funds = _has_positive_balance(balances)
 
             if has_funds:
-                print(f"\n*** FUNDS FOUND! ***")
+                found_count += 1
+                print()
+                print(f"{'*'*60}")
+                print(f"*** FUNDS FOUND! ({found_count}) ***")
                 print(f"Mnemonic: {mnemonic}")
                 for coin, bal in balances.items():
-                    print(f"  {coin.upper()}: {bal.get('balance', '?')}")
-                if save_found:
-                    log_found(mnemonic, balances, wallets)
+                    b = bal.get("balance", "?")
+                    print(f"  {coin.upper()}: {b}")
+                print(f"{'*'*60}")
+                log_found(mnemonic, balances, wallets)
 
             if verbose:
                 log_checked(mnemonic, balances, wallets)
             else:
-                if checked % 100 == 0:
-                    print(f"[*] Checked {checked} wallets...", end="\r")
+                bal_str = " | ".join(
+                    f"{k}: {v.get('balance', '?')}" for k, v in balances.items()
+                )
+                line = f"[{state_total_checked}] {mnemonic[:50]:50s} | {bal_str:40s}"
+                print(line, end="\r")
 
             if delay > 0:
                 time.sleep(delay)
+
+            if state_counter - last_state_save >= state_save_interval:
+                save_current_state()
+                last_state_save = state_counter
+
         except KeyboardInterrupt:
             break
         except Exception as e:
-            print(f"[!] Error: {e}")
+            print()
+            print(f"[!] Error at counter {state_counter}: {e}")
             continue
 
-    print(f"\n[*] Done. Checked {checked} wallets.")
+    save_current_state()
+    print()
+    print(f"[*] Stopped. Checked {state_total_checked} wallets.")
+    if found_count > 0:
+        print(f"[*] Found {found_count} wallet(s) with balance!")
 
 
 def single_check(mnemonic, checkers, verbose, save_found):
@@ -117,9 +145,9 @@ def single_check(mnemonic, checkers, verbose, save_found):
         print("[!] Invalid mnemonic phrase")
         return
 
-    wallets, balances = process_mnemonic(mnemonic, checkers, verbose=verbose)
+    wallets, balances = process_mnemonic(mnemonic, checkers, verbose=False)
 
-    print(f"\nMnemonic: {mnemonic}")
+    print(f"Mnemonic: {mnemonic}")
     print(f"\n--- Derived Wallets ---")
     for coin, addrs in wallets.items():
         label = COIN_CONFIGS.get(coin, {}).get("label", coin.upper())
@@ -143,8 +171,7 @@ def single_check(mnemonic, checkers, verbose, save_found):
 
     if has_funds:
         print(f"\n*** FUNDS FOUND! ***")
-        if save_found:
-            log_found(mnemonic, balances, wallets)
+        log_found(mnemonic, balances, wallets)
 
 
 def load_mnemonics_from_file(filepath):
@@ -179,6 +206,8 @@ def main():
     parser.add_argument("--delay", type=float, default=0, help="Delay between checks (seconds)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument("--save", action="store_true", help="Save results to file")
+    parser.add_argument("--reset-state", action="store_true", help="Reset generation state and start fresh")
+    parser.add_argument("--state", help="Path to custom state file")
     parser.add_argument("--etherscan-key", help="Etherscan API key")
     parser.add_argument("--solscan-key", help="Solscan API key")
 
@@ -187,6 +216,10 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
 
     print_banner()
+
+    if args.reset_state:
+        reset_state()
+        print("[*] Generation state reset. Next run will start fresh.\n")
 
     from src.balance_checker import set_api_key
     if args.etherscan_key:
@@ -215,7 +248,6 @@ def main():
     elif args.mode == "generate":
         print(f"[*] Generating wallets with {args.bits}-bit entropy...")
         print(f"[*] Checking: {', '.join(checkers.keys())}")
-        print("[*] Press Ctrl+C to stop\n")
         generate_loop(args.bits, args.delay, checkers, args.verbose, args.save)
     else:
         parser.print_help()

@@ -42,7 +42,8 @@ def entropy_to_mnemonic(entropy, wordlist=None):
         raise ValueError("Wordlist must contain exactly 2048 words")
 
     entropy_bits = bytes_to_bits(entropy)
-    checksum_bits = entropy_bits[:len(entropy) * 8 // 32]
+    h = hashlib.sha256(entropy).digest()
+    checksum_bits = bytes_to_bits(h)[:len(entropy) * 8 // 32]
     all_bits = entropy_bits + checksum_bits
 
     words = []
@@ -80,9 +81,10 @@ def validate_mnemonic(mnemonic, wordlist=None):
     for idx in indices:
         bits += format(idx, "011b")
 
-    entropy_bits = bits[:len(bits) * 32 // 33]
-    checksum_bits = bits[len(entropy_bits):]
+    checksum_size = len(words) // 3  # 12->4, 15->5, 18->6, 24->8
+    entropy_bits = bits[:len(bits) - checksum_size]
+    checksum_bits = bits[-checksum_size:]
     entropy = bits_to_bytes(entropy_bits)
 
-    expected_checksum = bytes_to_bits(hashlib.sha256(entropy).digest())[:len(checksum_bits)]
+    expected_checksum = bytes_to_bits(hashlib.sha256(entropy).digest())[:checksum_size]
     return checksum_bits == expected_checksum
