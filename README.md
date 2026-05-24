@@ -1,4 +1,4 @@
-# Zyra Wallet Seed Phrase Balance Checker
+# Tianreformis Wallet Seed Phrase Balance Checker
 
 A Python tool to generate BIP39 mnemonic seed phrases, derive cryptocurrency wallets, and check balances across multiple blockchains.
 

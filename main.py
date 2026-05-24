@@ -33,7 +33,7 @@ def signal_handler(sig, frame):
 
 def print_banner():
     print("=" * 60)
-    print("  Zyra Wallet Seed Phrase Balance Checker - Python Edition")
+    print("  Tianreformis Wallet Seed Phrase Balance Checker - Python Edition")
     print("  Supports: BTC | ETH | LTC | SOL | BCH | BNB | BSV")
     print("=" * 60)
 
@@ -181,7 +181,7 @@ def load_mnemonics_from_file(filepath):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Zyra Wallet Seed Phrase Balance Checker"
+        description="Tianreformis Wallet Seed Phrase Balance Checker"
     )
     parser.add_argument(
         "mode", nargs="?", choices=["generate", "check"],
